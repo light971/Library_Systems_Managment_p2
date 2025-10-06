@@ -4,7 +4,7 @@
 
 **Project Title**: Library Management System  
 **Level**: Intermediate  
-**Database**: `library_db`
+**Database**: `library_p2.db`
 
 This project demonstrates the implementation of a Library Management System using SQL. It includes creating and managing tables, performing CRUD operations, and executing advanced SQL queries. The goal is to showcase skills in database design, manipulation, and querying.
 
@@ -22,11 +22,11 @@ This project demonstrates the implementation of a Library Management System usin
 ### 1. Database Setup
 ![ERD](https://github.com/najirh/Library-System-Management---P2/blob/main/library_erd.png)
 
-- **Database Creation**: Created a database named `library_db`.
+- **Database Creation**: Created a database named `sql_projet_library_p2`.
 - **Table Creation**: Created tables for branches, employees, members, books, issued status, and return status. Each table includes relevant columns and relationships.
 
 ```sql
-CREATE DATABASE library_db;
+CREATE DATABASE sql_projet_library_p2;
 
 DROP TABLE IF EXISTS branch;
 CREATE TABLE branch
@@ -202,8 +202,9 @@ GROUP BY 1
 
 9. **List Members Who Registered in the Last 180 Days**:
 ```sql
-SELECT * FROM members
-WHERE reg_date >= CURRENT_DATE - INTERVAL '180 days';
+SELECT *
+FROM members
+WHERE reg_date >= DATE('now', '-180 days');
 ```
 
 10. **List Employees with Their Branch Manager's Name and their branch details**:
@@ -247,28 +248,29 @@ WHERE rs.return_id IS NULL;
 Write a query to identify members who have overdue books (assume a 30-day return period). Display the member's_id, member's name, book title, issue date, and days overdue.
 
 ```sql
-SELECT 
+SELECT
     ist.issued_member_id,
     m.member_name,
     bk.book_title,
     ist.issued_date,
-    -- rs.return_date,
-    CURRENT_DATE - ist.issued_date as over_dues_days
-FROM issued_status as ist
-JOIN 
-members as m
-    ON m.member_id = ist.issued_member_id
-JOIN 
-books as bk
-ON bk.isbn = ist.issued_book_isbn
-LEFT JOIN 
-return_status as rs
-ON rs.issued_id = ist.issued_id
-WHERE 
+    -- Calculate the number of days overdue
+    CAST(JULIANDAY('now') - JULIANDAY(ist.issued_date) AS INTEGER) AS over_due_days
+FROM
+    issued_status AS ist
+JOIN
+    members AS m ON m.member_id = ist.issued_member_id
+JOIN
+    books AS bk ON bk.isbn = ist.issued_book_isbn
+LEFT JOIN
+    return_status AS rs ON rs.issued_id = ist.issued_id
+WHERE
+    -- 1. Book has NOT been returned
     rs.return_date IS NULL
     AND
-    (CURRENT_DATE - ist.issued_date) > 30
-ORDER BY 1
+    -- 2. Time elapsed is greater than 30 days
+    JULIANDAY('now') - JULIANDAY(ist.issued_date) > 30
+ORDER BY
+    ist.issued_member_id;
 ```
 
 
@@ -278,38 +280,48 @@ Write a query to update the status of books in the books table to "Yes" when the
 
 ```sql
 
-CREATE OR REPLACE PROCEDURE add_return_records(p_return_id VARCHAR(10), p_issued_id VARCHAR(10), p_book_quality VARCHAR(10))
-LANGUAGE plpgsql
-AS $$
+-- Start the transaction to ensure all steps succeed or fail together
+BEGIN TRANSACTION;
 
-DECLARE
-    v_isbn VARCHAR(50);
-    v_book_name VARCHAR(80);
-    
-BEGIN
-    -- all your logic and code
-    -- inserting into returns based on users input
-    INSERT INTO return_status(return_id, issued_id, return_date, book_quality)
-    VALUES
-    (p_return_id, p_issued_id, CURRENT_DATE, p_book_quality);
+-- Assuming you know the ISBN from the issued_id lookup done in the application layer
+-- or that your issued_status table is structured to include the book's ISBN.
+-- Example values to use:
+-- :p_return_id = 'R001'
+-- :p_issued_id = 'I005'
+-- :p_book_quality = 'Good'
 
-    SELECT 
-        issued_book_isbn,
-        issued_book_name
-        INTO
-        v_isbn,
-        v_book_name
-    FROM issued_status
-    WHERE issued_id = p_issued_id;
+-- STEP 1: Insert the return record
+INSERT INTO return_status (return_id, issued_id, return_date, book_quality)
+VALUES (:p_return_id, :p_issued_id, DATE('now'), :p_book_quality);
+-- Note: SQLite uses DATE('now') or DATETIME('now')
 
-    UPDATE books
-    SET status = 'yes'
-    WHERE isbn = v_isbn;
+-- STEP 2: Retrieve the ISBN associated with the issued_id
+-- In a real application, this SELECT would be run first to get the ISBN.
+-- For this transaction, we assume the ISBN is known or that the application
+-- passed it along as a parameter, e.g., :p_isbn.
+-- If we must look it up in the transaction:
 
-    RAISE NOTICE 'Thank you for returning the book: %', v_book_name;
-    
-END;
-$$
+-- Note: In a pure SQLite environment without PL/pgSQL variables, you would
+-- typically SELECT the ISBN in the application, and then use the retrieved ISBN
+-- in the UPDATE statement below, like this:
+/*
+-- Pseudocode for the application layer logic:
+SELECT issued_book_isbn INTO @isbn FROM issued_status WHERE issued_id = :p_issued_id;
+
+-- Now execute the two SQL statements:
+INSERT INTO return_status ...
+UPDATE books SET status = 'yes' WHERE isbn = @isbn;
+*/
+
+-- If the application sends the ISBN (e.g., :p_isbn) as a parameter, the UPDATE is simple:
+UPDATE books
+SET status = 'yes'
+WHERE isbn = (SELECT issued_book_isbn FROM issued_status WHERE issued_id = :p_issued_id);
+
+
+-- Commit the changes only if both the INSERT and UPDATE succeeded
+COMMIT;
+
 
 
 -- Testing FUNCTION add_return_records
@@ -379,9 +391,8 @@ WHERE member_id IN (SELECT
                         DISTINCT issued_member_id   
                     FROM issued_status
                     WHERE 
-                        issued_date >= CURRENT_DATE - INTERVAL '2 month'
-                    )
-;
+                        issued_date >= DATE('now', '-2 month')
+                    );
 
 SELECT * FROM active_members;
 
@@ -408,7 +419,19 @@ GROUP BY 1, 2
 
 **Task 18: Identify Members Issuing High-Risk Books**  
 Write a query to identify members who have issued books more than twice with the status "damaged" in the books table. Display the member name, book title, and the number of times they've issued damaged books.    
-
+```sql
+SELECT 
+    m.member_name,
+    b.book_title,
+    COUNT(i.issued_id) AS times_issued_damaged
+FROM issued_status i
+JOIN books b ON i.issued_book_isbn = b.isbn
+JOIN members m ON i.issued_member_id = m.member_id
+WHERE b.status = 'damaged'
+GROUP BY m.member_name, b.book_title
+HAVING COUNT(i.issued_id) > 2
+ORDER BY times_issued_damaged DESC;
+```
 
 **Task 19: Stored Procedure**
 Objective:
@@ -422,54 +445,34 @@ If the book is not available (status = 'no'), the procedure should return an err
 
 ```sql
 
-CREATE OR REPLACE PROCEDURE issue_book(p_issued_id VARCHAR(10), p_issued_member_id VARCHAR(30), p_issued_book_isbn VARCHAR(30), p_issued_emp_id VARCHAR(10))
-LANGUAGE plpgsql
-AS $$
+-- Simulation de issue_book dans SQLite
+-- paramètres manuels
+-- p_issued_member_id = 'C108'
+-- p_issued_book_isbn = '978-0-553-29698-2'
+-- p_issued_emp_id = 'E104'
 
-DECLARE
--- all the variabable
-    v_status VARCHAR(10);
+-- Vérifie la disponibilité du livre
+SELECT status FROM books WHERE isbn = '978-0-553-29698-2';
 
-BEGIN
--- all the code
-    -- checking if book is available 'yes'
-    SELECT 
-        status 
-        INTO
-        v_status
-    FROM books
-    WHERE isbn = p_issued_book_isbn;
+-- Si le livre est disponible ('yes'), exécute ceci :
+INSERT INTO issued_status(issued_id, issued_member_id, issued_date, issued_book_isbn, issued_emp_id)
+SELECT 
+    'IS' || printf('%03d', COALESCE(MAX(CAST(substr(issued_id, 3) AS INTEGER)), 0) + 1),
+    'C108',
+    DATE('now'),
+    '978-0-553-29698-2',
+    'E104'
+FROM issued_status;
 
-    IF v_status = 'yes' THEN
+UPDATE books
+SET status = 'no'
+WHERE isbn = '978-0-553-29698-2';
 
-        INSERT INTO issued_status(issued_id, issued_member_id, issued_date, issued_book_isbn, issued_emp_id)
-        VALUES
-        (p_issued_id, p_issued_member_id, CURRENT_DATE, p_issued_book_isbn, p_issued_emp_id);
+SELECT 'Book records added successfully' AS message;
 
-        UPDATE books
-            SET status = 'no'
-        WHERE isbn = p_issued_book_isbn;
-
-        RAISE NOTICE 'Book records added successfully for book isbn : %', p_issued_book_isbn;
-
-
-    ELSE
-        RAISE NOTICE 'Sorry to inform you the book you have requested is unavailable book_isbn: %', p_issued_book_isbn;
-    END IF;
-END;
-$$
-
--- Testing The function
-SELECT * FROM books;
--- "978-0-553-29698-2" -- yes
--- "978-0-375-41398-8" -- no
-SELECT * FROM issued_status;
-
-CALL issue_book('IS155', 'C108', '978-0-553-29698-2', 'E104');
-CALL issue_book('IS156', 'C108', '978-0-375-41398-8', 'E104');
-
-SELECT * FROM books
-WHERE isbn = '978-0-375-41398-8'
+-- Vérifie le résultat
+SELECT * FROM books WHERE isbn = '978-0-553-29698-2';
+SELECT * FROM issued_status WHERE issued_id = 'IS155';
 
 ```
 
@@ -486,7 +489,38 @@ Description: Write a CTAS query to create a new table that lists each member and
     Member ID
     Number of overdue books
     Total fines
+```sql
+CREATE TABLE overdue_books_summary AS
+SELECT 
+    m.member_id,
+    
+    -- nombre de livres actuellement en retard
+    COUNT(CASE 
+        WHEN r.return_id IS NULL 
+             AND julianday('now') - julianday(i.issued_date) > 30
+        THEN 1 
+    END) AS overdue_books,
+    
+    -- total des amendes (0,5 $ par jour de retard)
+    SUM(
+        CASE 
+            WHEN r.return_id IS NULL 
+                 AND julianday('now') - julianday(i.issued_date) > 30
+            THEN (julianday('now') - julianday(i.issued_date) - 30) * 0.5
+            ELSE 0
+        END
+    ) AS total_fines,
+    
+    -- nombre total de livres empruntés
+    COUNT(i.issued_id) AS total_books_issued
 
+FROM members m
+LEFT JOIN issued_status i ON m.member_id = i.issued_member_id
+LEFT JOIN return_status r ON i.issued_id = r.issued_id
+GROUP BY m.member_id;
+
+SELECT * FROM overdue_books_summary;
+```
 
 
 ## Reports
@@ -510,13 +544,5 @@ This project demonstrates the application of SQL skills in creating and managing
 3. **Run the Queries**: Use the SQL queries in the `analysis_queries.sql` file to perform the analysis.
 4. **Explore and Modify**: Customize the queries as needed to explore different aspects of the data or answer additional questions.
 
-## Author - Zero Analyst
-
-This project showcases SQL skills essential for database management and analysis. For more content on SQL and data analysis, connect with me through the following channels:
-
-- **YouTube**: [Subscribe to my channel for tutorials and insights](https://www.youtube.com/@zero_analyst)
-- **Instagram**: [Follow me for daily tips and updates](https://www.instagram.com/zero_analyst/)
-- **LinkedIn**: [Connect with me professionally](https://www.linkedin.com/in/najirr)
-- **Discord**: [Join our community for learning and collaboration](https://discord.gg/36h5f2Z5PK)
 
 Thank you for your interest in this project!
